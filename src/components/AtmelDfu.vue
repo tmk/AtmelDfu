@@ -8,12 +8,15 @@ defineProps({
   },
 })
 
+
 /*
  *  Atmel DFU WebUSB
  */
-// https://ww1.microchip.com/downloads/en/DeviceDoc/doc7618.pdf
+// AVR MEGA: https://ww1.microchip.com/downloads/en/DeviceDoc/doc7618.pdf
+// AVR XMEGA: https://ww1.microchip.com/downloads/en/devicedoc/doc8457.pdf
 const AtmelDFU = {
     // bRequest
+    // DFU_DETACH, DFU_GETSTATE, DFU_ABORT is not defined on XMEGA and not used in dfu-programmer
     bRequest: {
         DFU_DETACH: 0,
         DFU_DNLOAD: 1,
@@ -58,30 +61,12 @@ const AtmelDFU = {
     },
 };
 
-
-let isButtonDisabled = false;
-
-var target = null; // USBDevice
-
-const device = ref('Not Selected');
-
-async function selectDevice() {
-    try {
-        target = await navigator.usb.requestDevice({ filters: [{ vendorId: 0x03eb /* atmel */ }] });
-        await target.open();
-        await target.claimInterface(0);
-
-        device.value = target.productName;
-        console.log(target.productName);
-        console.log(target.manufacturerName);
-    } catch(e) {
-        target = null;
-        device.value = 'Not selected';
-        console.log(e);
-    }
+async function getAtmelDevice() {
+    let dev = await navigator.usb.requestDevice({ filters: [{ vendorId: 0x03eb /* atmel */ }] });
+    await dev.open();
+    await dev.claimInterface(0);
+    return dev;
 }
-
-const status = ref('');
 
 function parseStatus(data) {
     return {
@@ -92,28 +77,6 @@ function parseStatus(data) {
         bState:         data.getUint8(4),
         iString:        data.getUint8(5),
     };
-}
-
-async function checkStatus() {
-    if (target === null) {
-        status.value = 'no target';
-        return;
-    }
-    try {
-        let result = await getStatus(target);
-
-        status.value = result.status;
-        let stat = parseStatus(result.data);
-        console.log('status: '        + result.status);
-        console.log('bStatus: '       + stat.bStatus);
-        console.log('bwPollTimeOut: ' + stat.bwPollTimeOut);
-        console.log('bState: '        + stat.bState);
-        console.log('iString: '       + stat.iString);
-    } catch(e) {
-        device.value = 'Invalid';
-        status.value = 'error';
-        console.log(e);
-    }
 }
 
 function getStatus(dev) {
@@ -140,54 +103,11 @@ function getStatus(dev) {
     );
 };
 
-function clearStatus(dev) {
-    if (dev === null) {
-        throw new Error('No device available');;
-    }
-
-    return dev.controlTransferOut(
-        {
-            requestType:    'class',
-            recipient:      'interface',
-            request:        AtmelDFU.bRequest.DFU_CLRSTATUS,
-            value:          0,
-            index:          0,  // interface
-        },
-    );
-};
-
-function abort(dev) {
-    if (dev === null) {
-        return;
-    }
-
-    return dev.controlTransferOut(
-        {
-            requestType:    'class',
-            recipient:      'interface',
-            request:        AtmelDFU.bRequest.DFU_ABORT,
-            value:          0,
-            index:          0,  // interface
-        },
-    );
-};
-
-async function writeFlash() {
-    try {
-        let result = await writeBlock(target, 0x0000, 0x5, [0, 1, 2, 3, 4, 5]);
-        console.log('byteWritten: ' + result.bytesWritten);
-        console.log('status: ' + result.status);
-        status.value = result.status;
-    } catch (e) {
-        console.log(e);
-    }
-}
-
-function writeBlock(dev, start, end, data) {
+function writeBlock(dev, start, end, data, eeprom = false) {
     //let header = new Uint8Array(32);    // bMaxPacketSize0
     const header = [];
     header[0] = 0x01;   // 4.6.1.1 Write Command
-    header[1] = 0x00;   // Flash:0  EEPROM:1
+    header[1] = (eeprom ? 0x01 : 0x00); // Flash:0  EEPROM:1
     header[2] = (start >> 8) & 0xff;
     header[3] = start & 0xff;
     header[4] = (end >> 8) & 0xff;
@@ -233,36 +153,12 @@ function writeBlock(dev, start, end, data) {
     );
 }
 
-async function readFlash() {
-    try {
-        let result = await readBlock(target, 0x0000, 0x6fff);
-        console.log('status: '        + result.status);
-        status.value = result.status;
-
-        /*
-        console.log(result.data.getUint8(0));
-        console.log(result.data.getUint8(1));
-        console.log(result.data.getUint8(2));
-        console.log(result.data.getUint8(0x6fff));
-
-        result = await getStatus(dev);
-        let stat = parseStatus(result.data);
-        console.log('status: '        + result.status);
-        console.log('bStatus: '       + stat.bStatus);
-        console.log('bwPollTimeOut: ' + stat.bwPollTimeOut);
-        console.log('bState: '        + stat.bState);
-        console.log('iString: '       + stat.iString);
-        */
-    } catch (e) {
-        console.log(e);
-    }
-}
-
-async function readBlock(dev, start, end) {
+async function readBlock(dev, start, end, eeprom = false) {
     if (dev === null) {
         return;
     }
     let cmd = new Uint8Array([ 0x03, 0x00, 0x00, 0x00, 0x00, 0x00 ]);
+    cmd[1] = (eeprom ? 0x02 : 0x00);
     cmd[2] = (start >> 8) & 0xff;
     cmd[3] = start & 0xff;
     cmd[4] = (end >> 8) & 0xff;
@@ -280,7 +176,7 @@ async function readBlock(dev, start, end) {
     );
     console.log('byteWritten: ' + result.bytesWritten);
 
-    result = await dev.controlTransferIn(
+    return dev.controlTransferIn(
         {
             requestType:    'class',
             recipient:      'interface',
@@ -290,34 +186,129 @@ async function readBlock(dev, start, end) {
         },
         (end - start + 1)
     );
-    for (let i = 0; i < result.data.byteLength; i++) {
-        if (result.data.getUint8(i) !== 0xff) {
-            console.log(i.toString(16) + ': '  + result.data.getUint8(i).toString(16));
-        }
-    }
-    console.log('byteLength: ' + result.data.byteLength);
-
-    return result;
 };
 
-async function eraseAll() {
+function chipErase(dev) {
+    const cmd = new Uint8Array([ 0x04, 0x00, 0xff ]);
+    return dev.controlTransferOut(
+        {
+            requestType:    'class',
+            recipient:      'interface',
+            request:        AtmelDFU.bRequest.DFU_DNLOAD,
+            value:          0,  // wBlock
+            index:          0,  // interface
+        },
+        cmd
+    );
+}
+
+function blankCheck(dev, start, end) {
+    const cmd = new Uint8Array([ 0x03, 0x01, 0x00, 0x00, 0x6f, 0xff ]);
+    return dev.controlTransferOut(
+        {
+            requestType:    'class',
+            recipient:      'interface',
+            request:        AtmelDFU.bRequest.DFU_DNLOAD,
+            value:          0,  // wBlock
+            index:          0,  // interface
+        },
+        cmd
+    );
+}
+
+async function launch(dev) {
+    const cmd = new Uint8Array([ 0x04, 0x03, 0x00 ]);
+    await dev.controlTransferOut(
+        {
+            requestType:    'class',
+            recipient:      'interface',
+            request:        AtmelDFU.bRequest.DFU_DNLOAD,
+            value:          0,  // wBlock
+            index:          0,  // interface
+        },
+        cmd
+    );
+    return dev.controlTransferOut(
+        {
+            requestType:    'class',
+            recipient:      'interface',
+            request:        AtmelDFU.bRequest.DFU_DNLOAD,
+            value:          0,  // wBlock
+            index:          0,  // interface
+        }
+    );
+}
+
+function clearStatus(dev) {
+    if (dev === null) {
+        throw new Error('No device available');;
+    }
+
+    return dev.controlTransferOut(
+        {
+            requestType:    'class',
+            recipient:      'interface',
+            request:        AtmelDFU.bRequest.DFU_CLRSTATUS,
+            value:          0,
+            index:          0,  // interface
+        },
+    );
+};
+
+function abort(dev) {
+    if (dev === null) {
+        return;
+    }
+
+    return dev.controlTransferOut(
+        {
+            requestType:    'class',
+            recipient:      'interface',
+            request:        AtmelDFU.bRequest.DFU_ABORT,
+            value:          0,
+            index:          0,  // interface
+        },
+    );
+}
+
+/*
+ * Actions
+ */
+let isButtonDisabled = false;
+var target = null; // USBDevice
+const device = ref('Not Selected');
+const status = ref('');
+
+
+async function selectDevice() {
+    try {
+        target = await getAtmelDevice();
+
+        device.value = target.productName;
+        console.log(target.productName);
+        console.log(target.manufacturerName);
+    } catch(e) {
+        target = null;
+        device.value = 'Not selected';
+        console.log(e);
+    }
+}
+
+async function checkStatus() {
     if (target === null) {
         status.value = 'no target';
         return;
     }
     try {
-        const cmd = new Uint8Array([ 0x04, 0x00, 0xff ]);
-        let result = await target.controlTransferOut(
-            {
-                requestType:    'class',
-                recipient:      'interface',
-                request:        AtmelDFU.bRequest.DFU_DNLOAD,
-                value:          0,  // wBlock
-                index:          0,  // interface
-            },
-            cmd);
-        console.log('byteWritten: ' + result.bytesWritten);
-        status.value = result.status;   // 'ok' or 'stall'
+        let result = await getStatus(target);
+
+        status.value = result.status;
+        let stat = parseStatus(result.data);
+        console.log('status: '        + result.status);
+        console.log('bStatus: '       + stat.bStatus);
+        console.log('bwPollTimeOut: ' + stat.bwPollTimeOut);
+        console.log('bState: '        + stat.bState);
+        console.log('iString: '       + stat.iString);
     } catch(e) {
         device.value = 'Invalid';
         status.value = 'error';
@@ -325,26 +316,25 @@ async function eraseAll() {
     }
 }
 
-async function blankCheck() {
-    if (target === null) {
-        status.value = 'no target';
-        return;
+async function eraseChip() {
+    try {
+        let result = await chipErase(target);
+        console.log('byteWritten: ' + result.bytesWritten);
+        status.value = result.status;
+    } catch(e) {
+        device.value = 'Invalid';
+        status.value = 'error';
+        console.log(e);
     }
+}
+
+async function checkBlank() {
     try {
         // TODO:
         // atmeaga32u2/u4
         //      App: 28KB  0x0000 ... 0x6fff
         //      Flash: 32KB, Bootloader: 4KB
-        const cmd = new Uint8Array([ 0x03, 0x01, 0x00, 0x00, 0x6f, 0xff ]);
-        let result = await target.controlTransferOut(
-            {
-                requestType:    'class',
-                recipient:      'interface',
-                request:        AtmelDFU.bRequest.DFU_DNLOAD,
-                value:          0,  // wBlock
-                index:          0,  // interface
-            },
-            cmd);
+        let result = await blankCheck(target, 0x0000, 0x6fff);
         console.log('byteWritten: ' + result.bytesWritten);
 
         result = await getStatus(target);
@@ -369,33 +359,65 @@ async function blankCheck() {
     }
 }
 
-async function launch() {
-    if (target === null) {
-        status.value = 'no target';
-        return;
-    }
+async function writeFlash() {
     try {
-        const cmd = new Uint8Array([ 0x04, 0x03, 0x00 ]);
-        let result = await target.controlTransferOut(
-            {
-                requestType:    'class',
-                recipient:      'interface',
-                request:        AtmelDFU.bRequest.DFU_DNLOAD,
-                value:          0,  // wBlock
-                index:          0,  // interface
-            },
-            cmd);
-        console.log('byteWritten1: ' + result.bytesWritten);
+        let result = await writeBlock(target, 0x0000, 0x5, [0, 1, 2, 3, 4, 5]);
+        console.log('byteWritten: ' + result.bytesWritten);
+        console.log('status: ' + result.status);
+        status.value = result.status;
+    } catch (e) {
+        console.log(e);
+    }
+}
 
-        result = await target.controlTransferOut(
-            {
-                requestType:    'class',
-                recipient:      'interface',
-                request:        AtmelDFU.bRequest.DFU_DNLOAD,
-                value:          0,  // wBlock
-                index:          0,  // interface
-            });
-        console.log('byteWritten2: ' + result.bytesWritten);
+async function readFlash() {
+    try {
+        let result = await readBlock(target, 0x0000, 0x6fff);
+        console.log('status: ' + result.status);
+        status.value = result.status;
+
+        for (let i = 0; i < result.data.byteLength; i++) {
+            if (result.data.getUint8(i) !== 0xff) {
+                console.log(i.toString(16) + ': ' + result.data.getUint8(i).toString(16));
+            }
+        }
+        console.log('byteLength: ' + result.data.byteLength);
+    } catch (e) {
+        console.log(e);
+    }
+}
+
+async function writeEEPROM() {
+    try {
+        let result = await writeBlock(target, 0x0000, 0x5, [0x10, 0x11, 0x12, 0x13, 0x14, 0x15], true);
+        console.log('byteWritten: ' + result.bytesWritten);
+        console.log('status: ' + result.status);
+        status.value = result.status;
+    } catch (e) {
+        console.log(e);
+    }
+}
+
+async function readEEPROM() {
+    try {
+        let result = await readBlock(target, 0x0000, 0x03ff, true);
+        console.log('status: ' + result.status);
+        status.value = result.status;
+
+        for (let i = 0; i < result.data.byteLength; i++) {
+            if (result.data.getUint8(i) !== 0xff) {
+                console.log(i.toString(16) + ': ' + result.data.getUint8(i).toString(16));
+            }
+        }
+        console.log('byteLength: ' + result.data.byteLength);
+    } catch (e) {
+        console.log(e);
+    }
+}
+
+async function startApp() {
+    try {
+        let result = await launch(target);
         status.value = result.status;   // 'ok' or 'stall'
     } catch(e) {
         device.value = 'Invalid';
@@ -414,7 +436,6 @@ async function recoverError() {
             console.log('aborting...');
             result = await abort(target);
         }
-
         status.value = result.status;
         console.log('status: ' + result.status);
     } catch(e) {
@@ -430,7 +451,7 @@ async function recoverError() {
     <h1 class="green">Target: {{ device }}</h1>
     <h3>
       Device: {{ device }}
-      <button :disabled="isButtonDisabled" @click="selectDevice">Select</button>
+      <button :disabled="isButtonDisabled" @click="selectDevice">Select Device</button>
     </h3>
 
     <h3>
@@ -439,24 +460,34 @@ async function recoverError() {
     </h3>
 
     <h3>
-      <button @click="launch">Launch</button>
+      <button @click="eraseChip">Erase Chip</button>
     </h3>
     <h3>
-      <button @click="eraseAll">Erase All</button>
+      <button @click="checkBlank">Check Blank</button>
     </h3>
+
     <h3>
-      <button @click="blankCheck">Blank Check</button>
+      <button @click="writeFlash">Write Flash</button>
     </h3>
 
     <h3>
       <button @click="readFlash">Read Flash</button>
     </h3>
+
     <h3>
-      <button @click="recoverError">Recover Error</button>
+      <button @click="writeEEPROM">Write EEPROM</button>
     </h3>
 
     <h3>
-      <button @click="writeFlash">Write Flash</button>
+      <button @click="readEEPROM">Read EEPROM</button>
+    </h3>
+
+    <h3>
+      <button @click="startApp">Start App</button>
+    </h3>
+
+    <h3>
+      <button @click="recoverError">Recover Error</button>
     </h3>
   </div>
 </template>
