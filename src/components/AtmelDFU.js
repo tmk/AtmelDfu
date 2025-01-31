@@ -125,8 +125,8 @@ export function writeBlock(dev, start, end, data, eeprom = false) {
     msg.set(header, 0);
     msg.set(data, header.length);
     msg.set(footer, header.length + data.length);
-    console.log('length: ' + msg.length);
-    console.log('msg: ' + msg);
+    //console.log('length: ' + msg.length);
+    //console.log('msg: ' + msg);
 
     return dev.controlTransferOut(
         {
@@ -161,7 +161,7 @@ export async function readBlock(dev, start, end, eeprom = false) {
         },
         cmd
     );
-    console.log('byteWritten: ' + result.bytesWritten);
+    //console.log('byteWritten: ' + result.bytesWritten);
 
     return dev.controlTransferIn(
         {

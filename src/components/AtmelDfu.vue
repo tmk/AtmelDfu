@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, useTemplateRef } from 'vue'
 import * as AtmelDFU from './AtmelDFU.js'
 
 defineProps({
@@ -17,6 +17,7 @@ let isButtonDisabled = false;
 var target = null; // USBDevice
 const device = ref('Not Selected');
 const status = ref('');
+const message = ref('');
 
 
 async function selectDevice() {
@@ -34,21 +35,21 @@ async function selectDevice() {
 }
 
 async function checkStatus() {
-    if (target === null) {
-        status.value = 'no target';
-        return;
-    }
     try {
         let result = await AtmelDFU.getStatus(target);
 
         status.value = result.status;
         let stat = AtmelDFU.parseStatus(result.data);
+
         console.log('status: '        + result.status);
         console.log('bStatus: '       + stat.bStatus);
         console.log('bwPollTimeOut: ' + stat.bwPollTimeOut);
         console.log('bState: '        + stat.bState);
         console.log('iString: '       + stat.iString);
+
+        message.value = `status: ${stat.bStatus}, state: ${stat.bState}`;
     } catch(e) {
+        message.value = `Error: ${e.name}`;
         device.value = 'Invalid';
         status.value = 'error';
         console.log(e);
@@ -58,7 +59,6 @@ async function checkStatus() {
 async function eraseChip() {
     try {
         let result = await AtmelDFU.chipErase(target);
-        console.log('byteWritten: ' + result.bytesWritten);
         status.value = result.status;
     } catch(e) {
         device.value = 'Invalid';
@@ -98,14 +98,125 @@ async function checkBlank() {
     }
 }
 
+function hexStr(n, digit=2, toUpper=false) {
+    return ('0'*digit + n.toString(16)).substr(-digit);
+}
+
+function loadHex(text) {
+    // https://en.wikipedia.org/wiki/Intel_HEX
+    let data = [];
+    let ext_addr = 0;
+    let processed = 0;
+    let lines = text.split(/\r?\n/);
+    for (let index = 0; index < lines.length; index++) {
+        //   DATA:  ':'   dlen    addr    '00'  data        chkSum
+        //    EOF:  ':'  '00'     '0000'  '01'              chkSum
+        //    EXT:  ':'  '02'     '0000'  '02'  address     chkSum
+        //   segm:  ':'  '04'     '0000'  '03'  CS+IP       chkSum
+        // hiaddr:  ':'  '02'     '0000'  '04'  address     chkSum
+        //   addr:  ':'  '04'     '0000'  '05'  address     chkSum
+        if (lines[index].length == 0) {
+            console.log(`Ignore blank line: at line ${index + 1}`);
+            continue;
+        }
+
+        let line = lines[index].trim();
+        if (line.length < 11)   { throw new Error(`Invalid at line ${index + 1}`) }
+        if (line.at(0) !== ':') { throw new Error(`Invalid at line ${index + 1}`) }
+
+        let bytes = line.slice(1).match(/[0-9a-fA-F]{2}/g).map((h) => parseInt(h,16));
+        //console.log(bytes);
+
+        let checkSum = bytes.pop();
+        let sum = bytes.reduce((a, c) => a + c, 0);
+        if (checkSum !== (-sum & 0xff)) { throw new Error(`Checksum error at line ${index + 1}`) }
+
+        let dlen = bytes.shift();
+        let addr = bytes.shift() << 8 | bytes.shift();
+        let type = bytes.shift();
+
+        switch (type) {
+            case 0: // DATA
+                if (data.length < ext_addr + addr) {
+                    console.log(`skip length: ${data.length}, addr: ${ext_addr + addr}`);
+                    for (let i = data.length; i < ext_addr + addr; i++) {
+                        data.push(0);
+                    }
+                } else if (data.length > ext_addr + addr) {
+                    throw new Error(`Address error at line ${index + 1}`);
+                }
+                data.push(...bytes);
+                break;
+            case 1: // EOF
+                // should stop?
+                console.log(`EOF: at line ${index + 1}`);
+                break;
+            case 2: // Extended Segment Address
+                if (2 !== data.length) throw new Error(`Invalid record at line ${index + 1}`);
+                ext_addr = ((data[0] << 8) | data[1]) * 16;
+                console.log(`Extended Segment Address: ${ext_addr} at line ${index + 1}`);
+                break;
+            case 4: // Extended Linear Address
+                if (2 !== data.length) throw new Error(`Invalid record at line ${index + 1}`);
+                ext_addr = ((data[0] << 8) | data[1]) << 16;
+                console.log(`Extended Segment Address: ${ext_addr} at line ${index + 1}`);
+                break;
+
+            case 3: // Start Segment Address
+            case 5: // Start Linear Address
+                console.log(`Not supported record type ${type} at line ${index + 1}`);
+                break;
+
+            default:
+                throw new Error(`Invalid record type ${type} at line ${index + 1}`);
+        }
+        processed++;
+    }
+    console.log(`processed: ${processed} of ${lines.length}`);
+    return data;
+}
+
 async function writeFlash() {
     try {
-        let result = await AtmelDFU.writeBlock(target, 0x0000, 0x5, [0, 1, 2, 3, 4, 5]);
-        console.log('byteWritten: ' + result.bytesWritten);
+        // read hex file
+        let hexFile = document.querySelector("#hexFile");
+	if (hexFile.files.length == 0) {
+            message.value = 'No file is specified.';
+            return;
+        }
+
+        let text = await hexFile.files[0].text();
+
+        let data = loadHex(text);
+        if (0x10000 < data.length) {
+            message.value = 'Large firmware(> 64KB) is not supported at this time.';
+            return;
+        }
+
+        // write
+        message.value = 'Writing Flash...';
+        let result = await AtmelDFU.writeBlock(target, 0x0000, data.length - 1, data);
+
+        // verify
+        message.value = 'Verifing...';
+        result = await AtmelDFU.readBlock(target, 0x0000, data.length - 1);
         console.log('status: ' + result.status);
+
+        for (let i = 0; i < result.data.byteLength; i++) {
+            if (result.data.getUint8(i) !== data[i]) {
+                console.log(hexStr(i, 4) + ': ' + hexStr(result.data.getUint8(i)));
+                message.value = `Failed at ${hexStr(i, 4)}`;
+                return;
+            }
+        }
         status.value = result.status;
+        message.value = 'Done';
     } catch (e) {
+        message.value = 'Error';
+        status.value = 'Error';
         console.log(e);
+        console.log(e.message);
+        console.log(e.name);
     }
 }
 
@@ -117,10 +228,19 @@ async function readFlash() {
 
         for (let i = 0; i < result.data.byteLength; i++) {
             if (result.data.getUint8(i) !== 0xff) {
-                console.log(i.toString(16) + ': ' + result.data.getUint8(i).toString(16));
+                //console.log(hexStr(i, 4) + ': ' + hexStr(result.data.getUint8(i)));
             }
         }
         console.log('byteLength: ' + result.data.byteLength);
+
+        // download link
+        let fl = document.querySelector('#file-link');
+        let blob = new Blob([result.data], { type: "image/jpeg" });
+        fl.setAttribute("href", window.URL.createObjectURL(blob));
+        fl.setAttribute("download", "flash.bin");
+        let fd = document.querySelector('#file-download');
+        fd.addEventListener("click", (e) => { fl.click(); });
+        fd.removeAttribute("disabled");
     } catch (e) {
         console.log(e);
     }
@@ -206,6 +326,8 @@ async function recoverError() {
     <h3>
       <button @click="writeFlash">Write Flash</button>
       <button @click="readFlash">Read Flash</button>
+      <button id="file-download" disabled>Download File</button>
+      <a id="file-link" style="display:none">Download File</a>
     </h3>
 
     <h3>
@@ -216,6 +338,15 @@ async function recoverError() {
     <h3>
       <button @click="startApp">Start App</button>
       <button @click="recoverError">Recover Error</button>
+    </h3>
+
+    <h3>
+        <label for="avatar">Firmware File:</label>
+        <input type="file" ref="hex-file" id="hexFile" name="hexFile" accept="*" />
+    </h3>
+
+    <h3>
+      Message: {{ message }}
     </h3>
   </div>
 </template>
