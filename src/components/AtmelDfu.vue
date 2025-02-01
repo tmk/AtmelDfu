@@ -1,5 +1,5 @@
 <script setup>
-import { ref, useTemplateRef } from 'vue'
+import { ref, onMounted, useTemplateRef } from 'vue'
 import * as AtmelDFU from './AtmelDFU.js'
 
 defineProps({
@@ -18,6 +18,13 @@ var target = null; // USBDevice
 const device = ref('Not Selected');
 const status = ref('');
 const message = ref('');
+
+onMounted(() => {
+    // download link
+    let fl = document.querySelector('#file-link');
+    let fd = document.querySelector('#file-download');
+    fd.addEventListener("click", (e) => { fl.click(); });
+})
 
 
 async function selectDevice() {
@@ -99,7 +106,8 @@ async function checkBlank() {
 }
 
 function hexStr(n, digit=2, toUpper=false) {
-    return ('0'*digit + n.toString(16)).substr(-digit);
+    return n.toString(16)
+    //return ('0'.repeat(digit-1) + n.toString(16))
 }
 
 function loadHex(text) {
@@ -176,6 +184,22 @@ function loadHex(text) {
     return data;
 }
 
+async function writeTest() {
+    try {
+        // write
+        message.value = 'Writing Flash...';
+        let result = await AtmelDFU.writeBlock(target, 0x6800, 0x6806, [0x0c, 0x94, 0x8d, 0x3e, 7, 9, 7 ]);
+        status.value = result.status;
+        message.value = 'Done';
+    } catch (e) {
+        message.value = 'Error';
+        status.value = 'Error';
+        console.log(e);
+        console.log(e.message);
+        console.log(e.name);
+    }
+}
+
 async function writeFlash() {
     try {
         // read hex file
@@ -220,26 +244,87 @@ async function writeFlash() {
     }
 }
 
-async function readFlash() {
-    try {
-        let result = await AtmelDFU.readBlock(target, 0x0000, 0x6fff);
-        console.log('status: ' + result.status);
-        status.value = result.status;
+function sleep(waitMsec) {
+  var startMsec = new Date();
+  while (new Date() - startMsec < waitMsec);
+}
 
-        for (let i = 0; i < result.data.byteLength; i++) {
-            if (result.data.getUint8(i) !== 0xff) {
-                //console.log(hexStr(i, 4) + ': ' + hexStr(result.data.getUint8(i)));
-            }
+async function readFlash() {
+    const BLOCK_SIZE = 0x400;
+    const PAGE_SIZE = 0x10000;
+    try {
+        let d = AtmelDFU.deviceInfo.find((e) => e.productId === target.productId);
+        console.log(d);
+        console.log(d.flashSize);
+        let sizeToRead;
+        if (d === undefined) {
+            console.log('Unknown Device');
+            sizeToRead = BLOCK_SIZE;
+        } else {
+            sizeToRead = d.flashSize;
+            //sizeToRead = d.flashSize - d.bootSize;
+            //sizeToRead = 0x10000;
         }
-        console.log('byteLength: ' + result.data.byteLength);
+
+        message.value = 'Reading Flash...';
+        let result;
+        let buf = new Uint8Array(sizeToRead);
+        let start = 0;
+        let end;
+        let page = -1;
+
+        //console.log(`select page: ${ page }`);
+        //result = await AtmelDFU.selectPage(target, page);
+
+        while (sizeToRead > 0) {
+            if (sizeToRead > BLOCK_SIZE) {
+                end = start + BLOCK_SIZE - 1;
+                sizeToRead = sizeToRead - BLOCK_SIZE;
+            } else {
+                end = start + sizeToRead - 1;
+                sizeToRead = 0;
+            }
+
+
+            if (page !== Math.floor(start / PAGE_SIZE)) {
+                page = Math.floor(start / PAGE_SIZE);
+                console.log(`select page: ${ page }`);
+                result = await AtmelDFU.selectPage(target, page);
+                result = await AtmelDFU.getStatus(target);
+            }
+
+            // avoid stepping over page border
+            if (end > (page + 1) * PAGE_SIZE) {
+                end = (page + 1) * PAGE_SIZE;
+            }
+
+            console.log(`read: page${page} ${hexStr(start)} ... ${hexStr(end)}`);
+            //console.log(`read: ${hexStr(start % BLOCK_SIZE)} ... ${hexStr(end % BLOCK_SIZE)}`);
+            result = await AtmelDFU.readBlock(target, start % BLOCK_SIZE, end % BLOCK_SIZE);
+            console.log('byteLength: ' + result.data.byteLength);
+            //console.log('status: ' + result.status);
+            //console.log(result.data);
+            buf.set(new Uint8Array(result.data.buffer), start);
+            //console.log(buf);
+
+            //result = await AtmelDFU.getStatus(target);
+
+            start = end + 1;
+        }
+        message.value = 'Done';
+        console.log(buf);
+
 
         // download link
         let fl = document.querySelector('#file-link');
-        let blob = new Blob([result.data], { type: "image/jpeg" });
-        fl.setAttribute("href", window.URL.createObjectURL(blob));
-        fl.setAttribute("download", "flash.bin");
         let fd = document.querySelector('#file-download');
-        fd.addEventListener("click", (e) => { fl.click(); });
+        //fd.addEventListener("click", (e) => { fl.click(); });
+
+        window.URL.revokeObjectURL(fl.getAttribute("href"));
+        let blob = new Blob([buf], { type: "image/jpeg" });
+        let file =  window.URL.createObjectURL(blob);
+        fl.setAttribute("href", file);
+        fl.setAttribute("download", "flash.bin");
         fd.removeAttribute("disabled");
     } catch (e) {
         console.log(e);
@@ -328,6 +413,10 @@ async function recoverError() {
       <button @click="readFlash">Read Flash</button>
       <button id="file-download" disabled>Download File</button>
       <a id="file-link" style="display:none">Download File</a>
+    </h3>
+
+    <h3>
+      <button @click="writeTest">Write Test</button>
     </h3>
 
     <h3>

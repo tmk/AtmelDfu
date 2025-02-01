@@ -51,6 +51,19 @@ export const bState = {
     dfuERROR: 10,
 };
 
+export const deviceInfo = [
+    { name: "at90usb128x", vendorId: 0x03eb, productId: 0x2FFB, flashSize: 0x20000, bootSize: 0x2000, eepromSize: 0x1000 },
+    { name: "at90usb64x",  vendorId: 0x03eb, productId: 0x2FF9, flashSize: 0x10000, bootSize: 0x2000, eepromSize: 0x0800 },
+    { name: "at90usb162",  vendorId: 0x03eb, productId: 0x2FFA, flashSize: 0x04000, bootSize: 0x1000, eepromSize: 0x0200 },
+    { name: "at90usb82",   vendorId: 0x03eb, productId: 0x2FF7, flashSize: 0x02000, bootSize: 0x1000, eepromSize: 0x0200 },
+    { name: "atmega32u6",  vendorId: 0x03eb, productId: 0x2FF2, flashSize: 0x08000, bootSize: 0x1000, eepromSize: 0x0400 },
+    { name: "atmega32u4",  vendorId: 0x03eb, productId: 0x2FF4, flashSize: 0x08000, bootSize: 0x1000, eepromSize: 0x0400 },
+    { name: "atmega32u2",  vendorId: 0x03eb, productId: 0x2FF0, flashSize: 0x08000, bootSize: 0x1000, eepromSize: 0x0400 },
+    { name: "atmega16u4",  vendorId: 0x03eb, productId: 0x2FF3, flashSize: 0x04000, bootSize: 0x1000, eepromSize: 0x0200 },
+    { name: "atmega16u2",  vendorId: 0x03eb, productId: 0x2FEF, flashSize: 0x04000, bootSize: 0x1000, eepromSize: 0x0200 },
+    { name: "atmega8u2",   vendorId: 0x03eb, productId: 0x2FEE, flashSize: 0x02000, bootSize: 0x1000, eepromSize: 0x0200 },
+];
+
 export async function getAtmelDevice() {
     let dev = await navigator.usb.requestDevice({ filters: [{ vendorId: 0x03eb /* atmel */ }] });
     await dev.open();
@@ -89,6 +102,21 @@ export function getStatus(dev) {
         6 /* length */
     );
 };
+
+export function selectPage(dev, page) {
+    const cmd = new Uint8Array([ 0x06, 0x03, 0x00, 0x00 ]);
+    cmd[3] = page;
+    return dev.controlTransferOut(
+        {
+            requestType:    'class',
+            recipient:      'interface',
+            request:        bRequest.DFU_DNLOAD,
+            value:          0,  // wBlock
+            index:          0,  // interface
+        },
+        cmd
+    );
+}
 
 export function writeBlock(dev, start, end, data, eeprom = false) {
     //let header = new Uint8Array(32);    // bMaxPacketSize0
@@ -141,6 +169,7 @@ export function writeBlock(dev, start, end, data, eeprom = false) {
 }
 
 export async function readBlock(dev, start, end, eeprom = false) {
+    // TODO: should read data dividing 400h(1024) blocks
     if (dev === null) {
         return;
     }
