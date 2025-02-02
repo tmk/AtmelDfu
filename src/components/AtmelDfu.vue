@@ -196,6 +196,77 @@ function loadHex(text) {
     return data;
 }
 
+async function programFlash() {
+    try {
+        // read hex file
+        let hexFile = document.querySelector("#hexFile");
+	if (hexFile.files.length == 0) {
+            message.value = 'No file is specified.';
+            return;
+        }
+        let text = await hexFile.files[0].text();
+        let data = loadHex(text);
+
+        // close previous device
+        if (target !== null) {
+            await target.close();
+            target = null;
+        }
+        target = await AtmelDFU.getAtmelDevice();
+        if (target === null) {
+            device.value = 'Not selected';
+            return;
+        }
+        device.value = target.productName;
+        console.log(`Selected: ${target.productName}`);
+
+        // find device info
+        let d = AtmelDFU.deviceInfo.find((e) => e.productId === target.productId);
+        if (d === undefined) {
+            message.value = 'Unknown Device';
+            target.close();
+            return;
+        }
+        if (data.length > d.flashSize) {
+            message.value = 'Specified firmware is larger than Flash space.';
+            target.close();
+            return;
+        }
+
+        message.value = 'Erasing Flash...';
+        let result = await AtmelDFU.chipErase(target);
+
+        message.value = 'Writing Flash...';
+        result = await AtmelDFU.writeMemory(target, 0x0000, data.length - 1, data);
+
+        message.value = 'Verifing...';
+        let mem = await AtmelDFU.readMemory(target, 0, data.length - 1);
+
+        for (let i = 0; i < mem.byteLength; i++) {
+            if (mem[i] !== data[i]) {
+                console.log(hexStr(i, 4) + ': ' + hexStr(mem[i]));
+                message.value = `Failed to verify at ${hexStr(i, 4)}`;
+                return;
+            }
+        }
+
+        message.value = 'Launching...';
+        result = await AtmelDFU.launch(target);
+        status.value = result.status;
+
+        message.value = `Done. Wrote Flash ${data.length} bytes.`;
+
+
+        await target.close();
+        target = null;
+        device.value = 'Not selected';
+    } catch (e) {
+        message.value = 'Error on programming flash';
+        status.value = 'Error on programming flash';
+        console.log(e);
+    }
+}
+
 async function writeFlash() {
     try {
         // read hex file
@@ -383,6 +454,7 @@ async function recoverError() {
     </h3>
 
     <h3>
+      <button @click="programFlash">Program Flash</button>
       <button @click="writeFlash">Write Flash</button>
       <button @click="readFlash">Read Flash</button>
       <button id="file-download" disabled>Download File</button>

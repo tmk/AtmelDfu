@@ -377,5 +377,4 @@ export function abort(dev) {
 
 function hexStr(n, digit=2, toUpper=false) {
     return n.toString(16)
-    //return ('0'.repeat(digit-1) + n.toString(16))
 }
