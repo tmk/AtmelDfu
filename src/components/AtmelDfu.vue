@@ -173,13 +173,13 @@ function loadHex(text) {
                 //console.log(`loadHex: EOF at line ${index + 1}`);
                 break;
             case 2: // Extended Segment Address
-                if (2 !== data.length) throw new Error(`Invalid record at line ${index + 1}`);
-                ext_addr = ((data[0] << 8) | data[1]) * 16;
+                if (2 !== bytes.length) throw new Error(`Invalid record at line ${index + 1}`);
+                ext_addr = ((bytes[0] << 8) | bytes[1]) * 16;
                 console.log(`loadHex: Extended Segment Address: ${ext_addr} at line ${index + 1}`);
                 break;
             case 4: // Extended Linear Address
-                if (2 !== data.length) throw new Error(`Invalid record at line ${index + 1}`);
-                ext_addr = ((data[0] << 8) | data[1]) << 16;
+                if (2 !== bytes.length) throw new Error(`Invalid record at line ${index + 1}`);
+                ext_addr = ((bytes[0] << 8) | bytes[1]) << 16;
                 console.log(`loadHex: Extended Segment Address: ${ext_addr} at line ${index + 1}`);
                 break;
 
@@ -224,12 +224,16 @@ async function programFlash() {
         let d = AtmelDFU.deviceInfo.find((e) => e.productId === target.productId);
         if (d === undefined) {
             message.value = 'Unknown Device';
-            target.close();
+            await target.close();
+            target = null;
+            device.value = 'Not selected';
             return;
         }
         if (data.length > d.flashSize) {
             message.value = 'Specified firmware is larger than Flash space.';
-            target.close();
+            await target.close();
+            target = null;
+            device.value = 'Not selected';
             return;
         }
 
@@ -246,6 +250,9 @@ async function programFlash() {
             if (mem[i] !== data[i]) {
                 console.log(hexStr(i, 4) + ': ' + hexStr(mem[i]));
                 message.value = `Failed to verify at ${hexStr(i, 4)}`;
+                await target.close();
+                target = null;
+                device.value = 'Not selected';
                 return;
             }
         }
@@ -255,7 +262,6 @@ async function programFlash() {
         status.value = result.status;
 
         message.value = `Done. Wrote Flash ${data.length} bytes.`;
-
 
         await target.close();
         target = null;
