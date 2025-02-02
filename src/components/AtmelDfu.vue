@@ -24,6 +24,10 @@ onMounted(() => {
     let fl = document.querySelector('#file-link');
     let fd = document.querySelector('#file-download');
     fd.addEventListener("click", (e) => { fl.click(); });
+
+    let link = document.querySelector('#eeprom-link');
+    let button = document.querySelector('#eeprom-download');
+    button.addEventListener("click", (e) => { link.click(); });
 })
 
 
@@ -218,7 +222,7 @@ async function writeFlash() {
                 return;
             }
         }
-        message.value = `Done. Wrote ${data.length} bytes.`;
+        message.value = `Done. Wrote Flash ${data.length} bytes.`;
     } catch (e) {
         message.value = 'Error on writing flash';
         status.value = 'Error on writing flash';
@@ -240,17 +244,15 @@ async function readFlash() {
         //let end = d.flashSize - d.bootSize;
 
         message.value = 'Reading Flash...';
-        let buf = await AtmelDFU.readMemory(target, 0, end, false);
+        let mem = await AtmelDFU.readMemory(target, 0, end, false);
         message.value = 'Done';
-        console.log(buf);
 
         // download link
         let fl = document.querySelector('#file-link');
         let fd = document.querySelector('#file-download');
-        //fd.addEventListener("click", (e) => { fl.click(); });
 
         window.URL.revokeObjectURL(fl.getAttribute("href"));
-        let blob = new Blob([buf], { type: "image/jpeg" });
+        let blob = new Blob([mem], { type: "image/jpeg" });
         let file =  window.URL.createObjectURL(blob);
         fl.setAttribute("href", file);
         fl.setAttribute("download", "flash.bin");
@@ -262,27 +264,70 @@ async function readFlash() {
 
 async function writeEEPROM() {
     try {
-        let result = await AtmelDFU.writeBlock(target, 0x0000, 0x5, [0x10, 0x11, 0x12, 0x13, 0x14, 0x15], true);
-        console.log('byteWritten: ' + result.bytesWritten);
-        console.log('status: ' + result.status);
-        status.value = result.status;
+        let d = AtmelDFU.deviceInfo.find((e) => e.productId === target.productId);
+        if (d === undefined) {
+            console.log('Unknown Device');
+            return;
+        }
+        let end = d.eepromSize - 1;
+
+        // read hex file
+        let hexFile = document.querySelector("#eepromFile");
+	if (hexFile.files.length == 0) {
+            message.value = 'No file is specified.';
+            return;
+        }
+        let text = await hexFile.files[0].text();
+        let data = loadHex(text);
+
+        // write
+        message.value = 'Writing EEPROM...';
+        let result = await AtmelDFU.writeMemory(target, 0, data.length - 1, data, true);
+
+        // verify
+        message.value = 'Verifing...';
+        let mem = await AtmelDFU.readMemory(target, 0, data.length - 1, true);
+
+        for (let i = 0; i < mem.byteLength; i++) {
+            if (mem[i] !== data[i]) {
+                console.log(hexStr(i, 4) + ': ' + hexStr(mem[i]));
+                message.value = `Failed to verify at ${hexStr(i, 4)}`;
+                return;
+            }
+        }
+        message.value = `Done. Wrote EEPROM ${data.length} bytes.`;
     } catch (e) {
+        message.value = 'Error on writing EEPROM';
+        status.value = 'Error on writing EEPROM';
         console.log(e);
+        console.log(e.message);
+        console.log(e.name);
     }
 }
 
 async function readEEPROM() {
     try {
-        let result = await AtmelDFU.readBlock(target, 0x0000, 0x03ff, true);
-        console.log('status: ' + result.status);
-        status.value = result.status;
-
-        for (let i = 0; i < result.data.byteLength; i++) {
-            if (result.data.getUint8(i) !== 0xff) {
-                console.log(i.toString(16) + ': ' + result.data.getUint8(i).toString(16));
-            }
+        let d = AtmelDFU.deviceInfo.find((e) => e.productId === target.productId);
+        if (d === undefined) {
+            console.log('Unknown Device');
+            return;
         }
-        console.log('byteLength: ' + result.data.byteLength);
+        let end = d.eepromSize - 1;
+
+        message.value = 'Reading EEPROM...';
+        let mem = await AtmelDFU.readMemory(target, 0, end, true);
+        message.value = 'Done';
+
+        // download link
+        let link = document.querySelector('#eeprom-link');
+        let button = document.querySelector('#eeprom-download');
+
+        window.URL.revokeObjectURL(link.getAttribute("href"));
+        let blob = new Blob([mem], { type: "image/jpeg" });
+        let file =  window.URL.createObjectURL(blob);
+        link.setAttribute("href", file);
+        link.setAttribute("download", "eeprom.bin");
+        button.removeAttribute("disabled");
     } catch (e) {
         console.log(e);
     }
@@ -343,20 +388,27 @@ async function recoverError() {
       <button id="file-download" disabled>Download File</button>
       <a id="file-link" style="display:none">Download File</a>
     </h3>
+    <h3>
+        <label for="avatar">Firmware File:</label>
+        <input type="file" ref="hex-file" id="hexFile" name="hexFile" accept="*" />
+    </h3>
+
 
     <h3>
       <button @click="writeEEPROM">Write EEPROM</button>
       <button @click="readEEPROM">Read EEPROM</button>
+      <button id="eeprom-download" disabled>Download File</button>
+      <a id="eeprom-link" style="display:none">Download File</a>
     </h3>
+    <h3>
+        <label for="avatar">EEPROM File:</label>
+        <input type="file" id="eepromFile" accept="*" />
+    </h3>
+
 
     <h3>
       <button @click="startApp">Start App</button>
       <button @click="recoverError">Recover Error</button>
-    </h3>
-
-    <h3>
-        <label for="avatar">Firmware File:</label>
-        <input type="file" ref="hex-file" id="hexFile" name="hexFile" accept="*" />
     </h3>
 
     <h3>

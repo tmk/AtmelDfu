@@ -279,7 +279,9 @@ export async function readMemory(dev, start, end, eeprom = false) {
 
         //console.log(`read: page${page} ${hexStr(_start)} ... ${hexStr(_end)}`);
         result = await readBlock(dev, _start % PAGE_SIZE, _end % PAGE_SIZE, eeprom);
-        if (result.status != 'ok') throw new Error('readBlock failure');
+        if (result.status != 'ok') {
+            throw new Error(`readBlock failure at ${_start}`);
+        }
         //console.log('byteLength: ' + result.data.byteLength);
         //console.log('status: ' + result.status);
         //console.log(result.data.buffer);
