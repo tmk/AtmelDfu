@@ -29,11 +29,20 @@ onMounted(() => {
 
 async function selectDevice() {
     try {
+        // close previous device
+        if (target !== null) {
+            await target.close();
+            target = null;
+        }
+
         target = await AtmelDFU.getAtmelDevice();
+        if (target === null) {
+            device.value = 'Not selected';
+            return;
+        }
 
         device.value = target.productName;
-        console.log(target.productName);
-        console.log(target.manufacturerName);
+        console.log(`Selected: ${target.productName}`);
     } catch(e) {
         target = null;
         device.value = 'Not selected';
@@ -47,7 +56,6 @@ async function checkStatus() {
 
         status.value = result.status;
         let stat = AtmelDFU.parseStatus(result.data);
-
         console.log('status: '        + result.status);
         console.log('bStatus: '       + stat.bStatus);
         console.log('bwPollTimeOut: ' + stat.bwPollTimeOut);
@@ -65,8 +73,10 @@ async function checkStatus() {
 
 async function eraseChip() {
     try {
+        message.value = 'Erasing Flash...';
         let result = await AtmelDFU.chipErase(target);
         status.value = result.status;
+        message.value = 'Done';
     } catch(e) {
         device.value = 'Invalid';
         status.value = 'error';
@@ -76,25 +86,27 @@ async function eraseChip() {
 
 async function checkBlank() {
     try {
-        // TODO:
-        // atmeaga32u2/u4
-        //      App: 28KB  0x0000 ... 0x6fff
-        //      Flash: 32KB, Bootloader: 4KB
-        let result = await AtmelDFU.blankCheck(target, 0x0000, 0x6fff);
+        let d = AtmelDFU.deviceInfo.find((e) => e.productId === target.productId);
+        if (d === undefined) {
+            console.log('Unknown Device');
+            return;
+        }
+
+        let result = await AtmelDFU.blankCheck(target, 0, d.flashSize - 1);
         console.log('byteWritten: ' + result.bytesWritten);
 
         result = await AtmelDFU.getStatus(target);
         let stat = AtmelDFU.parseStatus(result.data);
-        console.log('status: '        + result.status);
-        console.log('bStatus: '       + stat.bStatus);
-        console.log('bwPollTimeOut: ' + stat.bwPollTimeOut);
-        console.log('bState: '        + stat.bState);
-        console.log('iString: '       + stat.iString);
 
         if (stat.bStatus == AtmelDFU.bStatus.OK) {
             console.log('Blank');
+            message.value = 'Blank';
         } else if (stat.bStatus === AtmelDFU.bStatus.errCHECK_ERASED) {
             console.log('Not Blank');
+            message.value = 'Not Blank';
+        } else {
+            console.log('Unknown Error');
+            message.value = 'Unknown Error';
         }
 
         status.value = result.status;
@@ -106,8 +118,7 @@ async function checkBlank() {
 }
 
 function hexStr(n, digit=2, toUpper=false) {
-    return n.toString(16)
-    //return ('0'.repeat(digit-1) + n.toString(16))
+    return n.toString(16);
 }
 
 function loadHex(text) {
@@ -124,7 +135,6 @@ function loadHex(text) {
         // hiaddr:  ':'  '02'     '0000'  '04'  address     chkSum
         //   addr:  ':'  '04'     '0000'  '05'  address     chkSum
         if (lines[index].length == 0) {
-            console.log(`Ignore blank line: at line ${index + 1}`);
             continue;
         }
 
@@ -133,7 +143,6 @@ function loadHex(text) {
         if (line.at(0) !== ':') { throw new Error(`Invalid at line ${index + 1}`) }
 
         let bytes = line.slice(1).match(/[0-9a-fA-F]{2}/g).map((h) => parseInt(h,16));
-        //console.log(bytes);
 
         let checkSum = bytes.pop();
         let sum = bytes.reduce((a, c) => a + c, 0);
@@ -146,7 +155,7 @@ function loadHex(text) {
         switch (type) {
             case 0: // DATA
                 if (data.length < ext_addr + addr) {
-                    console.log(`skip from: ${data.length}, to: ${ext_addr + addr}`);
+                    //console.log(`loadHex: skip from: ${data.length}, to: ${ext_addr + addr}`);
                     for (let i = data.length; i < ext_addr + addr; i++) {
                         data.push(0xff); // blank
                     }
@@ -157,47 +166,30 @@ function loadHex(text) {
                 break;
             case 1: // EOF
                 // should stop?
-                console.log(`EOF: at line ${index + 1}`);
+                //console.log(`loadHex: EOF at line ${index + 1}`);
                 break;
             case 2: // Extended Segment Address
                 if (2 !== data.length) throw new Error(`Invalid record at line ${index + 1}`);
                 ext_addr = ((data[0] << 8) | data[1]) * 16;
-                console.log(`Extended Segment Address: ${ext_addr} at line ${index + 1}`);
+                console.log(`loadHex: Extended Segment Address: ${ext_addr} at line ${index + 1}`);
                 break;
             case 4: // Extended Linear Address
                 if (2 !== data.length) throw new Error(`Invalid record at line ${index + 1}`);
                 ext_addr = ((data[0] << 8) | data[1]) << 16;
-                console.log(`Extended Segment Address: ${ext_addr} at line ${index + 1}`);
+                console.log(`loadHex: Extended Segment Address: ${ext_addr} at line ${index + 1}`);
                 break;
 
             case 3: // Start Segment Address
             case 5: // Start Linear Address
-                console.log(`Not supported record type ${type} at line ${index + 1}`);
+                console.log(`loadHex: Not supported record type ${type} at line ${index + 1}`);
                 break;
 
             default:
-                throw new Error(`Invalid record type ${type} at line ${index + 1}`);
+                throw new Error(`loadHex: Invalid record type ${type} at line ${index + 1}`);
         }
         processed++;
     }
-    console.log(`processed: ${processed} of ${lines.length}`);
     return data;
-}
-
-async function writeTest() {
-    try {
-        // write
-        message.value = 'Writing Flash...';
-        let result = await AtmelDFU.writeBlock(target, 0x6800, 0x6806, [0x0c, 0x94, 0x8d, 0x3e, 7, 9, 7 ]);
-        status.value = result.status;
-        message.value = 'Done';
-    } catch (e) {
-        message.value = 'Error';
-        status.value = 'Error';
-        console.log(e);
-        console.log(e.message);
-        console.log(e.name);
-    }
 }
 
 async function writeFlash() {
@@ -208,36 +200,28 @@ async function writeFlash() {
             message.value = 'No file is specified.';
             return;
         }
-
         let text = await hexFile.files[0].text();
-
         let data = loadHex(text);
-        if (0x10000 < data.length) {
-            message.value = 'Large firmware(> 64KB) is not supported at this time.';
-            return;
-        }
 
         // write
         message.value = 'Writing Flash...';
-        let result = await AtmelDFU.writeBlock(target, 0x0000, data.length - 1, data);
+        let result = await AtmelDFU.writeMemory(target, 0x0000, data.length - 1, data);
 
         // verify
         message.value = 'Verifing...';
-        result = await AtmelDFU.readBlock(target, 0x0000, data.length - 1);
-        console.log('status: ' + result.status);
+        let mem = await AtmelDFU.readMemory(target, 0, data.length - 1);
 
-        for (let i = 0; i < result.data.byteLength; i++) {
-            if (result.data.getUint8(i) !== data[i]) {
-                console.log(hexStr(i, 4) + ': ' + hexStr(result.data.getUint8(i)));
-                message.value = `Failed at ${hexStr(i, 4)}`;
+        for (let i = 0; i < mem.byteLength; i++) {
+            if (mem[i] !== data[i]) {
+                console.log(hexStr(i, 4) + ': ' + hexStr(mem[i]));
+                message.value = `Failed to verify at ${hexStr(i, 4)}`;
                 return;
             }
         }
-        status.value = result.status;
-        message.value = 'Done';
+        message.value = `Done. Wrote ${data.length} bytes.`;
     } catch (e) {
-        message.value = 'Error';
-        status.value = 'Error';
+        message.value = 'Error on writing flash';
+        status.value = 'Error on writing flash';
         console.log(e);
         console.log(e.message);
         console.log(e.name);
@@ -245,65 +229,20 @@ async function writeFlash() {
 }
 
 async function readFlash() {
-    const TRANSFER_SIZE = 0x400;
-    const PAGE_SIZE = 0x10000;
     try {
         let d = AtmelDFU.deviceInfo.find((e) => e.productId === target.productId);
-        console.log(d);
-        console.log(d.flashSize);
-        let sizeToRead;
         if (d === undefined) {
             console.log('Unknown Device');
-            sizeToRead = TRANSFER_SIZE;
-        } else {
-            sizeToRead = d.flashSize;
-            //sizeToRead = d.flashSize - d.bootSize;
-            //sizeToRead = 0x10000;
+            return;
         }
+
+        let end = d.flashSize - 1;
+        //let end = d.flashSize - d.bootSize;
 
         message.value = 'Reading Flash...';
-        let result;
-        let buf = new Uint8Array(sizeToRead);
-        let start = 0;
-        let end;
-        let page = -1;
-
-        while (sizeToRead > 0) {
-            if (sizeToRead > TRANSFER_SIZE) {
-                end = start + TRANSFER_SIZE - 1;
-                sizeToRead = sizeToRead - TRANSFER_SIZE;
-            } else {
-                end = start + sizeToRead - 1;
-                sizeToRead = 0;
-            }
-
-
-            if (page !== Math.floor(start / PAGE_SIZE)) {
-                page = Math.floor(start / PAGE_SIZE);
-                console.log(`select page: ${ page }`);
-                result = await AtmelDFU.selectPage(target, page);
-                result = await AtmelDFU.getStatus(target);
-            }
-
-            // avoid stepping over page border
-            if (end > (page + 1) * PAGE_SIZE) {
-                end = (page + 1) * PAGE_SIZE;
-            }
-
-            console.log(`read: page${page} ${hexStr(start)} ... ${hexStr(end)}`);
-            result = await AtmelDFU.readBlock(target, start % PAGE_SIZE, end % PAGE_SIZE);
-            console.log('byteLength: ' + result.data.byteLength);
-            console.log('status: ' + result.status);
-            console.log(result.data.buffer);
-
-            buf.set(new Uint8Array(result.data.buffer), start);
-
-            start = end + 1;
-        }
-        status.value = result.status;
+        let buf = await AtmelDFU.readMemory(target, 0, end, false);
         message.value = 'Done';
         console.log(buf);
-
 
         // download link
         let fl = document.querySelector('#file-link');
@@ -403,10 +342,6 @@ async function recoverError() {
       <button @click="readFlash">Read Flash</button>
       <button id="file-download" disabled>Download File</button>
       <a id="file-link" style="display:none">Download File</a>
-    </h3>
-
-    <h3>
-      <button @click="writeTest">Write Test</button>
     </h3>
 
     <h3>

@@ -51,6 +51,9 @@ export const bState = {
     dfuERROR: 10,
 };
 
+const TRANSFER_SIZE = 0x400;
+const PAGE_SIZE = 0x10000;
+
 export const deviceInfo = [
     { name: "at90usb128x", vendorId: 0x03eb, productId: 0x2FFB, flashSize: 0x20000, bootSize: 0x2000, eepromSize: 0x1000 },
     { name: "at90usb64x",  vendorId: 0x03eb, productId: 0x2FF9, flashSize: 0x10000, bootSize: 0x2000, eepromSize: 0x0800 },
@@ -65,10 +68,15 @@ export const deviceInfo = [
 ];
 
 export async function getAtmelDevice() {
-    let dev = await navigator.usb.requestDevice({ filters: [{ vendorId: 0x03eb /* atmel */ }] });
-    await dev.open();
-    await dev.claimInterface(0);
-    return dev;
+    try {
+	let dev = await navigator.usb.requestDevice({ filters: [{ vendorId: 0x03eb /* atmel */ }] });
+	await dev.open();
+	await dev.claimInterface(0);
+	return dev;
+    } catch (e) {
+        console.log(e);
+        return null;
+    }
 }
 
 export function parseStatus(data) {
@@ -119,7 +127,12 @@ export function selectPage(dev, page) {
 }
 
 export function writeBlock(dev, start, end, data, eeprom = false) {
-    //let header = new Uint8Array(32);    // bMaxPacketSize0
+    if (eeprom) {
+        if (start % 8 !== 0) throw new Error(`Not page aligned: ${start}`)
+    } else {
+        if (start % 256 !== 0) throw new Error(`Not page aligned: ${start}`)
+    }
+
     const header = [];
     header[0] = 0x01;   // 4.6.1.1 Write Command
     header[1] = (eeprom ? 0x01 : 0x00); // Flash:0  EEPROM:1
@@ -127,7 +140,7 @@ export function writeBlock(dev, start, end, data, eeprom = false) {
     header[3] = start & 0xff;
     header[4] = (end >> 8) & 0xff;
     header[5] = end & 0xff;
-    header[31] = 0x00;
+    header[31] = 0x00;  // bMaxPacketSize0 = 32
 
     //const footer = new Uint8Array(16);
     const footer = [];
@@ -153,8 +166,6 @@ export function writeBlock(dev, start, end, data, eeprom = false) {
     msg.set(header, 0);
     msg.set(data, header.length);
     msg.set(footer, header.length + data.length);
-    //console.log('length: ' + msg.length);
-    //console.log('msg: ' + msg);
 
     return dev.controlTransferOut(
         {
@@ -168,8 +179,46 @@ export function writeBlock(dev, start, end, data, eeprom = false) {
     );
 }
 
+export async function writeMemory(dev, start, end, data, eeprom = false) {
+    if (start > end) throw new Error('Memory range error');
+
+    let page = -1;
+    let _start = start;
+    let _end = 0;
+    let result;
+    let count = 0;
+
+    while (_start < end) {
+        if (page !== Math.floor(_start / PAGE_SIZE)) {
+            page = Math.floor(_start / PAGE_SIZE);
+            result = await selectPage(dev, page);
+            if (result.status != 'ok') throw new Error('selectPage failure');
+            result = await getStatus(dev);
+            //console.log(`select page: ${ page }`);
+        }
+
+        _end = _start + TRANSFER_SIZE - 1;
+        if (_end > end) _end = end;
+
+        // avoid stepping over page border
+        if (_end > (page + 1) * PAGE_SIZE) {
+            _end = (page + 1) * PAGE_SIZE;
+        }
+
+        let d = data.slice(_start - start, _end - start + 1);
+        //console.log(`write: page${page} ${hexStr(_start)} ... ${hexStr(_end)}`);
+        result = await writeBlock(dev, _start % PAGE_SIZE, _end % PAGE_SIZE, d, eeprom);
+        if (result.status != 'ok') throw new Error('writeBlock failure');
+        //console.log('bytesWritten: ' + result.bytesWritten);
+        //console.log('status: ' + result.status);
+
+        count += result.bytesWritten;
+        _start = _end + 1;
+    }
+    return count;
+}
+
 export async function readBlock(dev, start, end, eeprom = false) {
-    // TODO: should read data dividing 400h(1024) blocks
     if (dev === null) {
         return;
     }
@@ -190,7 +239,6 @@ export async function readBlock(dev, start, end, eeprom = false) {
         },
         cmd
     );
-    //console.log('byteWritten: ' + result.bytesWritten);
 
     return dev.controlTransferIn(
         {
@@ -203,6 +251,44 @@ export async function readBlock(dev, start, end, eeprom = false) {
         (end - start + 1)
     );
 };
+
+export async function readMemory(dev, start, end, eeprom = false) {
+    if (start > end) throw new Error('Memory range error');
+
+    let page = -1;
+    let _start = start;
+    let _end = 0;
+    let result;
+    let buf = new Uint8Array(end - start + 1);
+
+    while (_start < end) {
+        if (page !== Math.floor(_start / PAGE_SIZE)) {
+            page = Math.floor(_start / PAGE_SIZE);
+            result = await selectPage(dev, page);
+            result = await getStatus(dev);
+            //console.log(`select page: ${ page }`);
+        }
+
+        _end = _start + TRANSFER_SIZE - 1;
+        if (_end > end) _end = end;
+
+        // avoid stepping over page border
+        if (_end > (page + 1) * PAGE_SIZE) {
+            _end = (page + 1) * PAGE_SIZE;
+        }
+
+        //console.log(`read: page${page} ${hexStr(_start)} ... ${hexStr(_end)}`);
+        result = await readBlock(dev, _start % PAGE_SIZE, _end % PAGE_SIZE, eeprom);
+        if (result.status != 'ok') throw new Error('readBlock failure');
+        //console.log('byteLength: ' + result.data.byteLength);
+        //console.log('status: ' + result.status);
+        //console.log(result.data.buffer);
+
+        buf.set(new Uint8Array(result.data.buffer), _start - start);
+        _start = _end + 1;
+    }
+    return buf;
+}
 
 export function chipErase(dev) {
     const cmd = new Uint8Array([ 0x04, 0x00, 0xff ]);
@@ -287,3 +373,7 @@ export function abort(dev) {
     );
 }
 
+function hexStr(n, digit=2, toUpper=false) {
+    return n.toString(16)
+    //return ('0'.repeat(digit-1) + n.toString(16))
+}
