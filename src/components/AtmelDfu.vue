@@ -146,9 +146,9 @@ function loadHex(text) {
         switch (type) {
             case 0: // DATA
                 if (data.length < ext_addr + addr) {
-                    console.log(`skip length: ${data.length}, addr: ${ext_addr + addr}`);
+                    console.log(`skip from: ${data.length}, to: ${ext_addr + addr}`);
                     for (let i = data.length; i < ext_addr + addr; i++) {
-                        data.push(0);
+                        data.push(0xff); // blank
                     }
                 } else if (data.length > ext_addr + addr) {
                     throw new Error(`Address error at line ${index + 1}`);
@@ -244,13 +244,8 @@ async function writeFlash() {
     }
 }
 
-function sleep(waitMsec) {
-  var startMsec = new Date();
-  while (new Date() - startMsec < waitMsec);
-}
-
 async function readFlash() {
-    const BLOCK_SIZE = 0x400;
+    const TRANSFER_SIZE = 0x400;
     const PAGE_SIZE = 0x10000;
     try {
         let d = AtmelDFU.deviceInfo.find((e) => e.productId === target.productId);
@@ -259,7 +254,7 @@ async function readFlash() {
         let sizeToRead;
         if (d === undefined) {
             console.log('Unknown Device');
-            sizeToRead = BLOCK_SIZE;
+            sizeToRead = TRANSFER_SIZE;
         } else {
             sizeToRead = d.flashSize;
             //sizeToRead = d.flashSize - d.bootSize;
@@ -273,13 +268,10 @@ async function readFlash() {
         let end;
         let page = -1;
 
-        //console.log(`select page: ${ page }`);
-        //result = await AtmelDFU.selectPage(target, page);
-
         while (sizeToRead > 0) {
-            if (sizeToRead > BLOCK_SIZE) {
-                end = start + BLOCK_SIZE - 1;
-                sizeToRead = sizeToRead - BLOCK_SIZE;
+            if (sizeToRead > TRANSFER_SIZE) {
+                end = start + TRANSFER_SIZE - 1;
+                sizeToRead = sizeToRead - TRANSFER_SIZE;
             } else {
                 end = start + sizeToRead - 1;
                 sizeToRead = 0;
@@ -299,18 +291,16 @@ async function readFlash() {
             }
 
             console.log(`read: page${page} ${hexStr(start)} ... ${hexStr(end)}`);
-            //console.log(`read: ${hexStr(start % BLOCK_SIZE)} ... ${hexStr(end % BLOCK_SIZE)}`);
-            result = await AtmelDFU.readBlock(target, start % BLOCK_SIZE, end % BLOCK_SIZE);
+            result = await AtmelDFU.readBlock(target, start % PAGE_SIZE, end % PAGE_SIZE);
             console.log('byteLength: ' + result.data.byteLength);
-            //console.log('status: ' + result.status);
-            //console.log(result.data);
-            buf.set(new Uint8Array(result.data.buffer), start);
-            //console.log(buf);
+            console.log('status: ' + result.status);
+            console.log(result.data.buffer);
 
-            //result = await AtmelDFU.getStatus(target);
+            buf.set(new Uint8Array(result.data.buffer), start);
 
             start = end + 1;
         }
+        status.value = result.status;
         message.value = 'Done';
         console.log(buf);
 
