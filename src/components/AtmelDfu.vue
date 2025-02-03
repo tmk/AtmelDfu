@@ -214,7 +214,6 @@ async function programFlash() {
         }
         target = await AtmelDFU.getAtmelDevice();
         if (target === null) {
-            device.value = 'Not selected';
             return;
         }
         device.value = target.productName;
@@ -224,16 +223,10 @@ async function programFlash() {
         let d = AtmelDFU.deviceInfo.find((e) => e.productId === target.productId);
         if (d === undefined) {
             message.value = 'Unknown Device';
-            await target.close();
-            target = null;
-            device.value = 'Not selected';
             return;
         }
         if (data.length > d.flashSize) {
             message.value = 'Specified firmware is larger than Flash space.';
-            await target.close();
-            target = null;
-            device.value = 'Not selected';
             return;
         }
 
@@ -250,9 +243,6 @@ async function programFlash() {
             if (mem[i] !== data[i]) {
                 console.log(hexStr(i, 4) + ': ' + hexStr(mem[i]));
                 message.value = `Failed to verify at ${hexStr(i, 4)}`;
-                await target.close();
-                target = null;
-                device.value = 'Not selected';
                 return;
             }
         }
@@ -262,14 +252,16 @@ async function programFlash() {
         status.value = result.status;
 
         message.value = `Done. Wrote Flash ${data.length} bytes.`;
-
-        await target.close();
-        target = null;
-        device.value = 'Not selected';
     } catch (e) {
         message.value = 'Error on programming flash';
         status.value = 'Error on programming flash';
         console.log(e);
+    } finally {
+        if (target !== null) {
+            await target.close();
+        }
+        target = null;
+        device.value = 'Not selected';
     }
 }
 
@@ -336,6 +328,43 @@ async function readFlash() {
         fd.removeAttribute("disabled");
     } catch (e) {
         console.log(e);
+    }
+}
+
+async function clearEEPROM() {
+    try {
+        let d = AtmelDFU.deviceInfo.find((e) => e.productId === target.productId);
+        if (d === undefined) {
+            console.log('Unknown Device');
+            return;
+        }
+        let end = d.eepromSize - 1;
+
+        let data = new Uint8Array(d.eepromSize);
+        data.fill(0xff, 0, d.eepromSize);
+
+        // write
+        message.value = 'Writing EEPROM...';
+        let result = await AtmelDFU.writeMemory(target, 0, end, data, true);
+
+        // verify
+        message.value = 'Verifing...';
+        let mem = await AtmelDFU.readMemory(target, 0, end, true);
+
+        for (let i = 0; i < mem.byteLength; i++) {
+            if (mem[i] !== data[i]) {
+                console.log(hexStr(i, 4) + ': ' + hexStr(mem[i]));
+                message.value = `Failed to verify at ${hexStr(i, 4)}`;
+                return;
+            }
+        }
+        message.value = `Done. Wrote EEPROM ${data.length} bytes.`;
+    } catch (e) {
+        message.value = 'Error on writing EEPROM';
+        status.value = 'Error on writing EEPROM';
+        console.log(e);
+        console.log(e.message);
+        console.log(e.name);
     }
 }
 
@@ -473,6 +502,7 @@ async function recoverError() {
 
 
     <h3>
+      <button @click="clearEEPROM">Clear EEPROM</button>
       <button @click="writeEEPROM">Write EEPROM</button>
       <button @click="readEEPROM">Read EEPROM</button>
       <button id="eeprom-download" disabled>Download File</button>
